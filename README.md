@@ -76,8 +76,13 @@ connections, one client's departure, and automatic reconnection of the
 remaining four after a server restart. DPAPI round-trip and corrupted
 profile rejection are checked separately.
 
-Actual microphones, CS frame-time impact and the final public deployment
-must be verified separately. Voice travels over TCP/WSS, so packet loss
+A public Render WSS test passed with five native Windows clients sending
+synthetic Opus audio. The first left after eight seconds; the remaining
+four continued until 24 seconds, with zero decryption errors. See
+`public-results.json`.
+
+Actual microphones and CS frame-time impact must be verified separately.
+Voice travels over TCP/WSS, so packet loss
 can increase delay. AES-GCM uses a shared room key; no independent security
 audit or forward secrecy is claimed. Use headphones (no echo cancellation).
 

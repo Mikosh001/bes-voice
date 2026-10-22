@@ -1,0 +1,72 @@
+{
+  "passed": true,
+  "transport": "public WSS, native Windows WinHTTP, synthetic Opus audio",
+  "scenario": "Five clients join automatically. First exits after 8 seconds; four continue until 24 seconds. Each survivor receives more than the maximum possible audio before the first exit.",
+  "serverUrl": "https://bes-voice-berdi.onrender.com",
+  "health": {
+    "status": 200,
+    "body": "ok"
+  },
+  "releaseChecks": {
+    "--embedded-check": {
+      "exitCode": 0,
+      "report": {
+        "embeddedRoomValid": true
+      }
+    },
+    "--self-test": {
+      "exitCode": 0,
+      "report": {
+        "passed": true,
+        "opus": "libopus 1.6.1",
+        "aesGcmTamperRejected": true
+      }
+    }
+  },
+  "survivorsRunningWhenFirstExited": true,
+  "elapsedSeconds": 24.11,
+  "clients": [
+    {
+      "joins": 1,
+      "attempts": 1,
+      "maxPeers": 5,
+      "received": 1459,
+      "decryptErrors": 0
+    },
+    {
+      "joins": 1,
+      "attempts": 1,
+      "maxPeers": 5,
+      "received": 3866,
+      "decryptErrors": 0
+    },
+    {
+      "joins": 1,
+      "attempts": 1,
+      "maxPeers": 5,
+      "received": 3865,
+      "decryptErrors": 0
+    },
+    {
+      "joins": 1,
+      "attempts": 1,
+      "maxPeers": 5,
+      "received": 3863,
+      "decryptErrors": 0
+    },
+    {
+      "joins": 1,
+      "attempts": 1,
+      "maxPeers": 5,
+      "received": 3865,
+      "decryptErrors": 0
+    }
+  ],
+  "exitCodes": [
+    0,
+    0,
+    0,
+    0,
+    0
+  ]
+}
