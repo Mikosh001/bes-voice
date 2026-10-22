@@ -32,6 +32,7 @@ void syncSettings(){int keys[]={VK_XBUTTON1,VK_XBUTTON2,VK_LMENU,'V'};int gates[
 std::wstring roomStore(){auto path=iniPath();return path.substr(0,path.find_last_of(L"\\"))+L"\\room.bin";}
 void loadRoom(){
  room=readPortableProfile(executableDir()+L"\\BES-room.ini");
+ if(!room.valid())room=readEmbeddedProfile();
  if(room.valid()){if(!preview)saveProtectedProfile(roomStore(),room);}
  else room=readProtectedProfile(roomStore());
 }
@@ -144,7 +145,10 @@ int profileTest(const std::wstring& directory){
  auto file=CreateFileW(path.c_str(),GENERIC_WRITE,0,0,OPEN_EXISTING,0,0);if(file!=INVALID_HANDLE_VALUE){unsigned char b=0;DWORD n;WriteFile(file,&b,1,&n,0);CloseHandle(file);}ok=ok&&!readProtectedProfile(path).valid();DeleteFileW(path.c_str());
  std::ofstream report((directory+L"\\profile-test.json").c_str());report<<"{\"passed\":"<<(ok?"true":"false")<<"}";return ok?0:2;
 }
+int embeddedCheck(const std::wstring& path){
+ auto profile=readEmbeddedProfile();bool valid=profile.valid();std::ofstream report(path.c_str());report<<"{\"embeddedRoomValid\":"<<(valid?"true":"false")<<"}";return valid?0:2;
+}
 int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int){
  int argc=0;auto argv=CommandLineToArgvW(GetCommandLineW(),&argc);int result=0;
- try{if(argc>=3&&std::wstring(argv[1])==L"--relay")result=relay::run(_wtoi(argv[2]));else if(argc>=7&&std::wstring(argv[1])==L"--auto-bot")result=autoBot(argv[2],argv[3],argv[4],std::clamp(_wtoi(argv[5]),1,300),argv[6]);else if(argc>=3&&std::wstring(argv[1])==L"--profile-test")result=profileTest(argv[2]);else if(argc>=7&&(std::wstring(argv[1])==L"--bot"||std::wstring(argv[1])==L"--hardware-bot"))result=bot(argv[2],argv[3],argv[4],std::clamp(_wtoi(argv[5]),1,300),argv[6],std::wstring(argv[1])==L"--hardware-bot");else if(argc>=3&&std::wstring(argv[1])==L"--self-test")result=selftest(argv[2]);else if(argc>=3&&std::wstring(argv[1])==L"--preview")result=ui::run(instance,argv[2]);else result=ui::run(instance);}catch(...){result=3;}LocalFree(argv);return result;
+ try{if(argc>=3&&std::wstring(argv[1])==L"--relay")result=relay::run(_wtoi(argv[2]));else if(argc>=7&&std::wstring(argv[1])==L"--auto-bot")result=autoBot(argv[2],argv[3],argv[4],std::clamp(_wtoi(argv[5]),1,300),argv[6]);else if(argc>=3&&std::wstring(argv[1])==L"--embedded-check")result=embeddedCheck(argv[2]);else if(argc>=3&&std::wstring(argv[1])==L"--profile-test")result=profileTest(argv[2]);else if(argc>=7&&(std::wstring(argv[1])==L"--bot"||std::wstring(argv[1])==L"--hardware-bot"))result=bot(argv[2],argv[3],argv[4],std::clamp(_wtoi(argv[5]),1,300),argv[6],std::wstring(argv[1])==L"--hardware-bot");else if(argc>=3&&std::wstring(argv[1])==L"--self-test")result=selftest(argv[2]);else if(argc>=3&&std::wstring(argv[1])==L"--preview")result=ui::run(instance,argv[2]);else result=ui::run(instance);}catch(...){result=3;}LocalFree(argv);return result;
 }

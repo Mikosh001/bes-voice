@@ -41,13 +41,20 @@ Build using `native/Build.ps1` on Windows with CMake and Ninja installed.
 The script downloads checksum-verified Zig 0.14.1 and Opus 1.6.1.
 No .NET, Node.js or browser runtime is needed by the finished client.
 
-The distributed client bundle contains `BES.exe` and a private `BES-room.ini`:
+The private release can embed its room profile in `BES.exe`, so friends can
+open a single file. This profile is not committed. Source builds also support
+placing a private `BES-room.ini` beside `BES.exe`:
 
 ```ini
 [Room]
 server=wss://YOUR-SERVICE/voice
 key=YOUR_32_CHARACTER_RANDOM_HEX_ROOM_SECRET
 ```
+
+The embedded format is UTF-8 server URL, newline, then the 32-character room
+secret in RCDATA resource 201. Never publish a configured private executable
+in a public release. It contains the room capability just like a private
+invitation file.
 
 Never commit the real profile or room secret. The same private bundle is
 shared with the intended five friends. On first launch, a valid profile is

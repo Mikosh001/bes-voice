@@ -18,6 +18,15 @@ inline RoomProfile readPortableProfile(const std::wstring& path){
  RoomProfile p{server,secret};return p.valid()?p:RoomProfile{};
 }
 
+inline RoomProfile readEmbeddedProfile(){
+ auto module=GetModuleHandleW(0);auto resource=FindResourceW(module,MAKEINTRESOURCEW(201),RT_RCDATA);
+ if(!resource)return {};auto length=SizeofResource(module,resource);if(length<1||length>4096)return {};
+ auto loaded=LoadResource(module,resource);auto data=(const char*)LockResource(loaded);if(!data)return {};
+ std::string text(data,length);auto split=text.find('\n');if(split==std::string::npos)return {};
+ RoomProfile profile{wide(text.substr(0,split)),wide(text.substr(split+1))};
+ return profile.valid()?profile:RoomProfile{};
+}
+
 inline bool saveProtectedProfile(const std::wstring& path,const RoomProfile& p){
  if(!p.valid())return false;auto text=utf8(p.server+L"\n"+p.secret);
  DATA_BLOB in{(DWORD)text.size(),(BYTE*)text.data()},out{};
