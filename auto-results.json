@@ -6,28 +6,28 @@
       "joins": 2,
       "attempts": 2,
       "maxPeers": 5,
-      "received": 1324,
+      "received": 1319,
       "decryptErrors": 0
     },
     {
       "joins": 2,
       "attempts": 2,
       "maxPeers": 5,
-      "received": 1325,
+      "received": 1326,
       "decryptErrors": 0
     },
     {
       "joins": 2,
       "attempts": 2,
       "maxPeers": 5,
-      "received": 1325,
+      "received": 1328,
       "decryptErrors": 0
     },
     {
       "joins": 2,
       "attempts": 2,
       "maxPeers": 5,
-      "received": 1325,
+      "received": 1326,
       "decryptErrors": 0
     }
   ],

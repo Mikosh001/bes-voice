@@ -83,7 +83,7 @@ class VoiceSession {
    }catch(...){if(!connected&&running)why=L"Серверге қосылмады. Шақыруды тексеріп, қайта көріңіз.";}
    bool wasRunning=running.exchange(false);connected=false;if(wasRunning)setStatus(why);
    if(capture.joinable())capture.join();if(playback.joinable())playback.join();
-   {std::lock_guard<std::mutex> l(sendMutex);if(ws){WinHttpCloseHandle(ws);ws=0;}}
+   {std::lock_guard<std::mutex> l(sendMutex);if(ws){WinHttpWebSocketClose(ws,WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS,0,0);WinHttpCloseHandle(ws);ws=0;}}
    if(request)WinHttpCloseHandle(request);if(connection)WinHttpCloseHandle(connection);if(session)WinHttpCloseHandle(session);
    {std::lock_guard<std::mutex> l(peerMutex);for(auto& r:remotes){if(r.decoder)opus_decoder_destroy(r.decoder);r=Remote{};}members={};}
  }
@@ -93,7 +93,7 @@ public:
  std::atomic<uint64_t> sent{0},received{0},mixed{0},decryptErrors{0},bytesSent{0},bytesReceived{0};
  ~VoiceSession(){stop();}
  void start(const std::wstring& server,const std::wstring& secret,const std::wstring& nick,unsigned inDev=WAVE_MAPPER,unsigned outDev=WAVE_MAPPER,bool bot=false){stop();url=server;code=secret;name=nick;inputDevice=inDev;outputDevice=outDev;synthetic=bot;self=-1;sent=0;received=0;mixed=0;decryptErrors=0;bytesSent=0;bytesReceived=0;audioError=false;outActive=false;lastSpeech=0;running=true;setStatus(L"Серверге қосылуда…");network=std::thread([this]{networkLoop();});}
- void stop(){running=false;{std::lock_guard<std::mutex> l(sendMutex);if(ws){WinHttpCloseHandle(ws);ws=0;}}if(network.joinable())network.join();connected=false;setStatus(L"Қосылмаған");}
+ void stop(){running=false;{std::lock_guard<std::mutex> l(sendMutex);if(ws)WinHttpWebSocketShutdown(ws,WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS,0,0);}if(network.joinable())network.join();connected=false;setStatus(L"Қосылмаған");}
  void heartbeat(){if(connected){Bytes b{0x20};put32(b,(DWORD)GetTickCount());send(b);}}
  std::wstring getStatus(){std::lock_guard<std::mutex> l(statusMutex);return status;}
  std::array<Member,5> getMembers(){std::lock_guard<std::mutex> l(peerMutex);return members;}
