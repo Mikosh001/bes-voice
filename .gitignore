@@ -1,0 +1,12 @@
+node_modules/
+.env
+*.log
+*room*.ini
+*profile*.bin
+private/
+
+native/.deps/
+native/build/
+*.exe
+*.zip
+*.res

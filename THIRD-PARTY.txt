@@ -1,0 +1,21 @@
+BES 0.1 contains or uses:
+
+Opus 1.6.1, copyright Xiph.Org Foundation and contributors, BSD license.
+https://opus-codec.org/
+Source archive SHA256:
+6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1
+
+LLVM libc++/libc++abi and Zig runtime, Apache-2.0 with LLVM exceptions / MIT.
+Built using Zig 0.14.1 and the MinGW-w64 Windows runtime.
+https://ziglang.org/download/0.14.1/release-notes.html
+https://github.com/llvm/llvm-project
+https://www.mingw-w64.org/
+
+Host package only:
+cloudflared 2026.10.3, Cloudflare and contributors, Apache-2.0.
+Official Windows amd64 binary; not modified by BES.
+https://github.com/cloudflare/cloudflared/releases/tag/2026.10.3
+SHA256: 76b2805253d0d6ffacb092a7acfbee99e7af6917835c0c5410e23f3ef5052da2
+
+Full license texts are provided in licenses/. Third-party projects are not
+affiliated with or endorsing BES. Cloudflare's hosted service has its own terms.
