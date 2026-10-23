@@ -1,0 +1,19 @@
+#pragma once
+inline int processAudio(const std::wstring& source,const std::wstring& destination,int mode){
+ std::ifstream input(source.c_str(),std::ios::binary);std::ofstream output(destination.c_str(),std::ios::binary);if(!input||!output)return 2;NoiseFilter filter;AudioFrame pcm;uint64_t frames=0;while(input.read((char*)pcm.data(),sizeof pcm)){filter.process(pcm,mode);output.write((char*)pcm.data(),sizeof pcm);frames++;}return frames&&input.gcount()==0&&output?0:2;
+}
+inline int audioTest(const std::wstring& path){
+ NoiseFilter filter;double before=0,after=0;uint32_t random=527;AudioFrame pcm;
+ for(int frame=0;frame<300;frame++){for(int i=0;i<SAMPLES;i++){random=random*1664525+1013904223;pcm[i]=(short)(int((random>>16)&65535)-32768)/24;}auto original=pcm;filter.process(pcm,1);if(frame>150)for(int i=0;i<SAMPLES;i++){before+=double(original[i])*original[i];after+=double(pcm[i])*pcm[i];}}
+ double reduction=10*std::log10((before+1)/(after+1));
+ NoiseFilter bypass;AudioFrame identical;for(int i=0;i<SAMPLES;i++)identical[i]=(short)(i*19-3000);auto saved=identical;bypass.process(identical,0);bool bypassExact=identical==saved;
+ SpeechGate gate;AudioFrame voiced;voiced.fill(1200);bool opens=gate.process(voiced,100,true,1000);AudioFrame quiet{};bool holds=gate.process(quiet,100,true,1100);for(uint64_t now=1120;now<1600;now+=20){quiet.fill(0);gate.process(quiet,100,true,now);}quiet.fill(0);bool shuts=!gate.process(quiet,100,true,1700);voiced.fill(2000);gate.process(voiced,100,false,1720);bool muted=audioRms(voiced.data())==0;
+ MixLimiter limiter;std::array<int,SAMPLES> loud{};for(int i=0;i<SAMPLES;i++)loud[i]=i%2?120000:-120000;auto limited=limiter.process(loud,150);int peak=0;for(auto value:limited)peak=std::max(peak,std::abs(int(value)));
+ int error;auto* encoder=opus_encoder_create(RATE,1,OPUS_APPLICATION_VOIP,&error);opus_encoder_ctl(encoder,OPUS_SET_INBAND_FEC(1));opus_encoder_ctl(encoder,OPUS_SET_PACKET_LOSS_PERC(10));std::vector<Bytes> packets;
+ for(int frame=0;frame<32;frame++){for(int i=0;i<SAMPLES;i++)pcm[i]=(short)(4000*sin((frame*SAMPLES+i)*.16));unsigned char encoded[1275];int length=opus_encode(encoder,pcm.data(),SAMPLES,encoded,sizeof encoded);packets.emplace_back(encoded,encoded+length);}opus_encoder_destroy(encoder);
+ PlayoutBuffer jitter;jitter.push(packets[0],0,1000);jitter.push(packets[1],1,1020);AudioFrame out;bool begins=jitter.pull(out,1040);jitter.pull(out,1060);jitter.push(packets[3],3,1061);bool conceals=jitter.pull(out,1080)&&jitter.concealed>0;bool rejectsReplay=!jitter.push(packets[3],3,1081);
+ for(uint32_t i=4;i<32;i++)jitter.push(packets[i],i,1100+i);bool bounded=jitter.queued()<=6&&jitter.dropped>0;jitter.pull(out,1160);bounded=bounded&&jitter.queued()<=3;
+ NoiseFilter switched;AudioFrame stale;stale.fill(5000);switched.process(stale,1);stale.fill(5000);switched.process(stale,1);stale.fill(0);switched.process(stale,0);switched.process(stale,1);bool freshAfterToggle=audioRms(stale.data())==0;
+ bool passed=reduction>8&&bypassExact&&opens&&holds&&shuts&&muted&&peak<=27001&&begins&&conceals&&bounded&&rejectsReplay&&freshAfterToggle;
+ std::ofstream report(path.c_str());report<<"{\"passed\":"<<(passed?"true":"false")<<",\"stationaryNoiseReductionDb\":"<<reduction<<",\"noiseBypassExact\":"<<(bypassExact?"true":"false")<<",\"speechGateHoldAndMutePassed\":"<<(opens&&holds&&shuts&&muted?"true":"false")<<",\"fourSpeakerMixPeak\":"<<peak<<",\"jitterGapConcealed\":"<<(conceals?"true":"false")<<",\"jitterQueueBounded\":"<<(bounded?"true":"false")<<",\"replayRejected\":"<<(rejectsReplay?"true":"false")<<"}";return passed?0:2;
+}

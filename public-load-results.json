@@ -1,0 +1,81 @@
+{
+  "passed": true,
+  "scope": "Native voice engine with public WSS, AES-GCM, synthetic Opus encode/decode and four peers. Excludes GUI, microphone, physical output and CS; not a game performance guarantee.",
+  "peakWorkingSetMiBRange": [
+    15.26,
+    15.39
+  ],
+  "cpuPercentOfOneLogicalCoreRange": [
+    3.58,
+    5.12
+  ],
+  "clients": [
+    {
+      "joined": true,
+      "maxPeers": 5,
+      "sent": 574,
+      "received": 2270,
+      "mixed": 567,
+      "decryptErrors": 0,
+      "workingSetBytes": 16007168,
+      "cpuMs": 437.5,
+      "elapsedMs": 12219,
+      "audioError": false
+    },
+    {
+      "joined": true,
+      "maxPeers": 5,
+      "sent": 575,
+      "received": 2274,
+      "mixed": 569,
+      "decryptErrors": 0,
+      "workingSetBytes": 15998976,
+      "cpuMs": 484.375,
+      "elapsedMs": 12203,
+      "audioError": false
+    },
+    {
+      "joined": true,
+      "maxPeers": 5,
+      "sent": 570,
+      "received": 2256,
+      "mixed": 563,
+      "decryptErrors": 0,
+      "workingSetBytes": 16142336,
+      "cpuMs": 578.125,
+      "elapsedMs": 12125,
+      "audioError": false
+    },
+    {
+      "joined": true,
+      "maxPeers": 5,
+      "sent": 575,
+      "received": 2278,
+      "mixed": 570,
+      "decryptErrors": 0,
+      "workingSetBytes": 16052224,
+      "cpuMs": 609.375,
+      "elapsedMs": 12218,
+      "audioError": false
+    },
+    {
+      "joined": true,
+      "maxPeers": 5,
+      "sent": 576,
+      "received": 2278,
+      "mixed": 569,
+      "decryptErrors": 0,
+      "workingSetBytes": 16052224,
+      "cpuMs": 625,
+      "elapsedMs": 12203,
+      "audioError": false
+    }
+  ],
+  "exitCodes": [
+    0,
+    0,
+    0,
+    0,
+    0
+  ]
+}

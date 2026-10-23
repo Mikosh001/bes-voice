@@ -1,4 +1,4 @@
-# BES Voice 0.2
+# BES Voice 0.3
 
 A small native Windows voice app for five friends, backed by an independent
 cloud relay. Closing any client leaves the other participants connected.
@@ -38,7 +38,7 @@ unlimited free bandwidth. Clients retry while a sleeping instance starts.
 ## Windows client
 
 Build using `native/Build.ps1` on Windows with CMake and Ninja installed.
-The script downloads checksum-verified Zig 0.14.1 and Opus 1.6.1.
+The script downloads checksum-verified Zig 0.14.1, Opus 1.6.1 and SpeexDSP 1.2.1.
 No .NET, Node.js or browser runtime is needed by the finished client.
 
 The private release can embed its room profile in `BES.exe`, so friends can
@@ -67,6 +67,30 @@ microphone is connected, and the user can pause voice, mute, deafen or use
 push-to-talk. Closing the app stops only this user's client. It does not
 change Windows autostart settings.
 
+## Cleaner voice and bounded latency
+
+The default Balanced noise filter uses a 90 Hz high-pass and SpeexDSP spectral
+suppression, at 16 kHz with 20 ms frames. Strong and bypass modes are available.
+AGC is disabled so background noise is not automatically amplified. A soft
+speech gate uses hysteresis and a 280 ms hold to preserve word endings.
+Stationary hum and fan noise can be reduced; background speech and arbitrary
+keyboard clicks cannot be guaranteed to disappear. This is not speaker isolation
+or acoustic echo cancellation. The denoiser adds about 20 ms of algorithmic delay.
+
+Mic capture and network transmission have separate threads. The outgoing voice
+queue keeps at most three frames and discards stale audio under backpressure.
+The receive buffer keeps at most six encoded frames, adapts its initial target
+to two or three frames, and catches up after bursts. Decoding happens on the
+playback clock, with short Opus PLC/FEC recovery when sequence gaps are detected.
+Long gaps fade out rather than repeating audio indefinitely. TCP still has
+head-of-line blocking, so these bounds do not guarantee end-to-end latency.
+
+A mix limiter provides headroom when four friends speak together. Each peer has
+a local volume button cycling through 0/50/75/100/125/150%. Local volume resets
+when the slot changes participant. Device selections and noise mode are saved.
+Hardware audio uses MMCSS Audio threads and a two-frame output queue. The native
+UI uses a cached paint buffer and does not repaint while minimized.
+
 ## Verification and limits
 
 The local tests cover five slots, room authentication, roster changes,
@@ -80,6 +104,14 @@ A public Render WSS test passed with five native Windows clients sending
 synthetic Opus audio. The first left after eight seconds; the remaining
 four continued until 24 seconds, with zero decryption errors. See
 `public-results.json`.
+
+`speech-filter-results.json` evaluates a public Opus speech sample mixed with
+deterministic white noise and hum, without recording a microphone. The sample
+itself is not redistributed. `audio-results.json` checks noise reduction,
+bypass, speech-gate hold and mute, mix headroom, sequence-gap concealment,
+replay rejection and queue bounds. Run `BES.exe --audio-test report.json` after
+building. UI demonstration builds can define `BES_UI_DEMO`; they do not connect,
+open audio devices or change saved preferences. Their participant rows are fixtures.
 
 Actual microphones and CS frame-time impact must be verified separately.
 Voice travels over TCP/WSS, so packet loss

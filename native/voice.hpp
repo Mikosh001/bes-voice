@@ -1,100 +1,118 @@
 #pragma once
-#include "common.hpp"
+#include "audio.hpp"
 #include <winhttp.h>
 #include <mmsystem.h>
-#include <opus.h>
-#include <functional>
+#include <avrt.h>
+#include <condition_variable>
 
-constexpr int RATE=16000, SAMPLES=320;
 struct Member {bool present=false;std::wstring name;ULONGLONG spoke=0;};
+struct AudioPriority {DspFloatScope floatingPoint;HANDLE task=nullptr;AudioPriority(){DWORD index=0;task=AvSetMmThreadCharacteristicsW(L"Audio",&index);}~AudioPriority(){if(task)AvRevertMmThreadCharacteristics(task);}};
 class VoiceSession {
- std::thread network,capture,playback;std::mutex sendMutex,peerMutex,statusMutex;
- HINTERNET ws=0;std::unique_ptr<Crypto> tx,rx;Bytes prefix;uint32_t sequence=0;
- struct Remote {OpusDecoder* decoder=0;std::deque<std::array<short,SAMPLES>> queue;bool primed=false;uint32_t sequence=0;bool received=false;};
- Remote remotes[5];std::array<Member,5> members{};std::wstring status=L"Қосылмаған";
+ std::thread network,capture,playback,transmit;std::mutex sendMutex,peerMutex,statusMutex,queueMutex;std::condition_variable sendWake;
+ HINTERNET ws=0;std::unique_ptr<Crypto> tx,rx;Bytes prefix;uint32_t sequence=0;std::deque<Bytes> outbound;
+ PlayoutBuffer remotes[5];std::array<Member,5> members{};std::wstring status=L"Қосылмаған";
  std::wstring url,code,name;unsigned inputDevice=WAVE_MAPPER,outputDevice=WAVE_MAPPER;bool synthetic=false;
- bool send(const Bytes& b){std::lock_guard<std::mutex> l(sendMutex);if(!running||!ws)return false;return WinHttpWebSocketSend(ws,WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE,(void*)b.data(),(DWORD)b.size())==NO_ERROR;}
- void setStatus(const std::wstring& s){std::lock_guard<std::mutex> l(statusMutex);status=s;}
+ std::atomic<ULONGLONG> lastReceive{0};
+ bool send(const Bytes& b){std::lock_guard<std::mutex> lock(sendMutex);if(!running||!ws)return false;return WinHttpWebSocketSend(ws,WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE,(void*)b.data(),(DWORD)b.size())==NO_ERROR;}
+ void setStatus(const std::wstring& value){std::lock_guard<std::mutex> lock(statusMutex);status=value;}
+ void disconnect(const std::wstring& why){setStatus(why);running=false;sendWake.notify_all();std::lock_guard<std::mutex> lock(sendMutex);if(ws)WinHttpWebSocketShutdown(ws,WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS,nullptr,0);}
  WAVEFORMATEX format(){WAVEFORMATEX f{};f.wFormatTag=WAVE_FORMAT_PCM;f.nChannels=1;f.nSamplesPerSec=RATE;f.wBitsPerSample=16;f.nBlockAlign=2;f.nAvgBytesPerSec=RATE*2;return f;}
- void encodeFrame(OpusEncoder* enc,const short* pcm){
-   long long energy=0;for(int j=0;j<SAMPLES;j++)energy+=(long long)pcm[j]*pcm[j];int level=(int)std::sqrt(double(energy)/SAMPLES);micLevel=level;
-   bool allowed=!muted&&(!pushToTalk||(GetAsyncKeyState(pttKey.load())&0x8000));
-   if(!allowed){wasTalking=false;return;}bool talking=level>=gate.load();
-   if(talking)lastSpeech=GetTickCount64();if(!talking&&GetTickCount64()-lastSpeech>220){wasTalking=false;return;}
-   wasTalking=true;unsigned char compressed[1275];int n=opus_encode(enc,pcm,SAMPLES,compressed,sizeof compressed);if(n<=2)return;
-   uint32_t seq=sequence++;if(sequence==0){running=false;return;}Bytes b{0x10};put32(b,seq);Bytes nonce=prefix;put32(nonce,seq);b.insert(b.end(),nonce.begin(),nonce.end());Bytes encoded(compressed,compressed+n),encrypted;unsigned char tag[16];
-   if(!tx->crypt(true,encoded,nonce.data(),b.data()+1,encrypted,tag))return;
-   b.insert(b.end(),encrypted.begin(),encrypted.end());b.insert(b.end(),tag,tag+16);if(send(b)){sent++;bytesSent+=b.size();}
+ void transmitLoop(){
+  while(running){Bytes packet;{std::unique_lock<std::mutex> lock(queueMutex);sendWake.wait_for(lock,std::chrono::milliseconds(50),[&]{return !running||!outbound.empty();});if(!running)break;if(outbound.empty())continue;packet=std::move(outbound.front());outbound.pop_front();}
+   if(!send(packet)){disconnect(L"Байланыс үзілді. Өзі қайта қосылады.");break;}sent++;bytesSent+=packet.size();
+  }
+ }
+ void encodeFrame(OpusEncoder* encoder,NoiseFilter& filter,SpeechGate& speech,AudioFrame pcm){
+  int raw=audioRms(pcm.data());filter.process(pcm,noiseMode.load());micLevel=audioRms(pcm.data());rawMicLevel=raw;
+  bool allowed=!muted&&(!pushToTalk||(GetAsyncKeyState(pttKey.load())&0x8000));
+  bool active=speech.process(pcm,gate.load(),allowed,GetTickCount64());wasTalking=active;
+  if(!active)return;
+  unsigned char compressed[1275];int n=opus_encode(encoder,pcm.data(),SAMPLES,compressed,sizeof compressed);if(n<=2)return;
+  uint32_t seq=sequence++;if(sequence==0){disconnect(L"Байланыс жаңартылуда…");return;}
+  Bytes packet{0x10};put32(packet,seq);Bytes nonce=prefix;put32(nonce,seq);packet.insert(packet.end(),nonce.begin(),nonce.end());Bytes encoded(compressed,compressed+n),encrypted;unsigned char tag[16];
+  if(!tx->crypt(true,encoded,nonce.data(),packet.data()+1,encrypted,tag))return;
+  packet.insert(packet.end(),encrypted.begin(),encrypted.end());packet.insert(packet.end(),tag,tag+16);
+  {std::lock_guard<std::mutex> lock(queueMutex);if(outbound.size()>=3){outbound.pop_front();sendDropped++;}outbound.push_back(std::move(packet));}sendWake.notify_one();
  }
  void captureLoop(){
-   int err=0;auto* enc=opus_encoder_create(RATE,1,OPUS_APPLICATION_VOIP,&err);if(!enc){audioError=true;return;}
-   opus_encoder_ctl(enc,OPUS_SET_BITRATE(24000));opus_encoder_ctl(enc,OPUS_SET_COMPLEXITY(2));opus_encoder_ctl(enc,OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));opus_encoder_ctl(enc,OPUS_SET_DTX(synthetic?0:1));opus_encoder_ctl(enc,OPUS_SET_VBR(1));
-   if(synthetic){std::array<short,SAMPLES> pcm;uint64_t t=0;auto tick=std::chrono::steady_clock::now();while(running){for(int i=0;i<SAMPLES;i++,t++)pcm[i]=(short)(5000*sin(2*3.141592653589793*440*t/RATE));encodeFrame(enc,pcm.data());tick+=std::chrono::milliseconds(20);std::this_thread::sleep_until(tick);}opus_encoder_destroy(enc);return;}
-   HANDLE event=CreateEventW(0,FALSE,FALSE,0);HWAVEIN in=0;auto f=format();MMRESULT mr=waveInOpen(&in,inputDevice,&f,(DWORD_PTR)event,0,CALLBACK_EVENT|WAVE_FORMAT_DIRECT);
-   if(mr!=MMSYSERR_NOERROR)mr=waveInOpen(&in,inputDevice,&f,(DWORD_PTR)event,0,CALLBACK_EVENT);
-   if(mr!=MMSYSERR_NOERROR){setStatus(L"Микрофон ашылмады. Windows рұқсатын тексеріңіз.");audioError=true;CloseHandle(event);opus_encoder_destroy(enc);return;}
-   WAVEHDR headers[8]{};short buffers[8][SAMPLES]{};for(int i=0;i<8;i++){headers[i].lpData=(LPSTR)buffers[i];headers[i].dwBufferLength=sizeof buffers[i];waveInPrepareHeader(in,&headers[i],sizeof(WAVEHDR));waveInAddBuffer(in,&headers[i],sizeof(WAVEHDR));}waveInStart(in);
-   while(running){WaitForSingleObject(event,100);for(int i=0;i<8&&running;i++)if(headers[i].dwFlags&WHDR_DONE){if(headers[i].dwBytesRecorded==sizeof buffers[i])encodeFrame(enc,buffers[i]);headers[i].dwBytesRecorded=0;waveInAddBuffer(in,&headers[i],sizeof(WAVEHDR));}}
-   waveInStop(in);waveInReset(in);for(auto& h:headers)waveInUnprepareHeader(in,&h,sizeof h);waveInClose(in);CloseHandle(event);opus_encoder_destroy(enc);micLevel=0;wasTalking=false;
+  AudioPriority priority;int error=0;auto* encoder=opus_encoder_create(RATE,1,OPUS_APPLICATION_VOIP,&error);if(!encoder){audioError=true;disconnect(L"Дауыс кодегі ашылмады");return;}
+  NoiseFilter filter;SpeechGate speech;
+  opus_encoder_ctl(encoder,OPUS_SET_BITRATE(24000));opus_encoder_ctl(encoder,OPUS_SET_COMPLEXITY(2));opus_encoder_ctl(encoder,OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));opus_encoder_ctl(encoder,OPUS_SET_DTX(synthetic?0:1));opus_encoder_ctl(encoder,OPUS_SET_VBR(1));opus_encoder_ctl(encoder,OPUS_SET_INBAND_FEC(1));opus_encoder_ctl(encoder,OPUS_SET_PACKET_LOSS_PERC(5));
+  if(synthetic){AudioFrame pcm;uint64_t sample=0;auto tick=std::chrono::steady_clock::now();while(running){for(int i=0;i<SAMPLES;i++,sample++)pcm[i]=(short)(5000*sin(2*3.141592653589793*440*sample/RATE));encodeFrame(encoder,filter,speech,pcm);tick+=std::chrono::milliseconds(20);if(std::chrono::steady_clock::now()-tick>std::chrono::milliseconds(60))tick=std::chrono::steady_clock::now();std::this_thread::sleep_until(tick);}opus_encoder_destroy(encoder);return;}
+  HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr);HWAVEIN input=nullptr;auto f=format();MMRESULT result=waveInOpen(&input,inputDevice,&f,(DWORD_PTR)event,0,CALLBACK_EVENT|WAVE_FORMAT_DIRECT);
+  if(result!=MMSYSERR_NOERROR)result=waveInOpen(&input,inputDevice,&f,(DWORD_PTR)event,0,CALLBACK_EVENT);
+  if(result!=MMSYSERR_NOERROR){audioError=true;disconnect(L"Микрофон ашылмады. Құрылғы мен Windows рұқсатын тексеріңіз.");CloseHandle(event);opus_encoder_destroy(encoder);return;}
+  WAVEHDR headers[8]{};AudioFrame buffers[8]{};bool ready=true;int prepared=0;
+  for(int i=0;i<8;i++){headers[i].lpData=(LPSTR)buffers[i].data();headers[i].dwBufferLength=sizeof(AudioFrame);if(waveInPrepareHeader(input,&headers[i],sizeof(WAVEHDR))!=MMSYSERR_NOERROR){ready=false;break;}prepared++;if(waveInAddBuffer(input,&headers[i],sizeof(WAVEHDR))!=MMSYSERR_NOERROR){ready=false;break;}}
+  if(!ready||waveInStart(input)!=MMSYSERR_NOERROR){audioError=true;disconnect(L"Микрофоннан дыбыс оқу мүмкін болмады");}
+  int next=0;
+  while(running){WaitForSingleObject(event,60);int pending=0;for(auto& header:headers)if(header.dwFlags&WHDR_DONE)pending++;
+   for(int visited=0;visited<8&&running;visited++){int i=next;if(!(headers[i].dwFlags&WHDR_DONE))break;next=(next+1)%8;
+    if(pending>3){captureDropped++;}else if(headers[i].dwBytesRecorded==sizeof(AudioFrame))encodeFrame(encoder,filter,speech,buffers[i]);pending--;
+    headers[i].dwBytesRecorded=0;if(waveInAddBuffer(input,&headers[i],sizeof(WAVEHDR))!=MMSYSERR_NOERROR){audioError=true;disconnect(L"Микрофон ажыратылды. Қайта қосылуда…");}
+   }
+  }
+  waveInStop(input);waveInReset(input);for(int i=0;i<prepared;i++)waveInUnprepareHeader(input,&headers[i],sizeof(WAVEHDR));waveInClose(input);CloseHandle(event);opus_encoder_destroy(encoder);micLevel=rawMicLevel=0;wasTalking=false;
+ }
+ AudioFrame mixFrame(MixLimiter& limiter){
+  std::array<int,SAMPLES> mix{};bool any=false;
+  {std::lock_guard<std::mutex> lock(peerMutex);for(int id=0;id<5;id++){AudioFrame pcm;if(remotes[id].pull(pcm,GetTickCount64())){int gain=peerVolume[id];for(int i=0;i<SAMPLES;i++)mix[i]+=pcm[i]*gain/100;any=true;}}}
+  if(any)mixed++;return limiter.process(mix,deafened?0:volume.load());
  }
  void playbackLoop(){
-   HWAVEOUT out=0;auto f=format();MMRESULT mr=MMSYSERR_NOERROR;if(!synthetic)mr=waveOutOpen(&out,outputDevice,&f,0,0,CALLBACK_NULL);if(mr!=MMSYSERR_NOERROR){setStatus(L"Құлаққап ашылмады. Дыбыс құрылғысын таңдаңыз.");audioError=true;return;}
-   WAVEHDR headers[4]{};short buffers[4][SAMPLES]{};for(int i=0;i<4;i++){headers[i].lpData=(LPSTR)buffers[i];headers[i].dwBufferLength=sizeof buffers[i];if(out)waveOutPrepareHeader(out,&headers[i],sizeof(WAVEHDR));}
-   int index=0;auto tick=std::chrono::steady_clock::now();
-   while(running){std::array<int,SAMPLES> mix{};bool any=false;
-    {std::lock_guard<std::mutex> l(peerMutex);for(auto& r:remotes){if(r.queue.empty()){r.primed=false;continue;}if(!r.primed){if(r.queue.size()<2)continue;r.primed=true;}auto pcm=r.queue.front();r.queue.pop_front();for(int i=0;i<SAMPLES;i++)mix[i]+=pcm[i];any=true;}}
-    auto& h=headers[index];if(synthetic){if(any)mixed++;}else if(!(h.dwFlags&WHDR_INQUEUE)){
-      for(int i=0;i<SAMPLES;i++){int v=deafened?0:mix[i]*volume.load()/100;buffers[index][i]=(short)std::clamp(v,-32768,32767);}if(any||outActive){waveOutWrite(out,&h,sizeof h);outActive=any;}index=(index+1)%4;
-    }
-    tick+=std::chrono::milliseconds(20);auto now=std::chrono::steady_clock::now();if(now-tick>std::chrono::milliseconds(60))tick=now;std::this_thread::sleep_until(tick);
-   }
-   if(out){waveOutReset(out);for(auto& h:headers)waveOutUnprepareHeader(out,&h,sizeof h);waveOutClose(out);}
+  AudioPriority priority;MixLimiter limiter;
+  if(synthetic){auto tick=std::chrono::steady_clock::now();while(running){mixFrame(limiter);tick+=std::chrono::milliseconds(20);if(std::chrono::steady_clock::now()-tick>std::chrono::milliseconds(60))tick=std::chrono::steady_clock::now();std::this_thread::sleep_until(tick);}return;}
+  HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr);HWAVEOUT output=nullptr;auto f=format();
+  if(waveOutOpen(&output,outputDevice,&f,(DWORD_PTR)event,0,CALLBACK_EVENT)!=MMSYSERR_NOERROR){audioError=true;disconnect(L"Құлаққап ашылмады. Дыбыс құрылғысын тексеріңіз.");CloseHandle(event);return;}
+  WAVEHDR headers[4]{};AudioFrame buffers[4]{};int prepared=0;
+  for(int i=0;i<4;i++){headers[i].lpData=(LPSTR)buffers[i].data();headers[i].dwBufferLength=sizeof(AudioFrame);if(waveOutPrepareHeader(output,&headers[i],sizeof(WAVEHDR))!=MMSYSERR_NOERROR){audioError=true;disconnect(L"Дыбыс буфері ашылмады");break;}prepared++;}
+  bool started=false;
+  while(running){int queued=0;for(auto& header:headers)if(header.dwFlags&WHDR_INQUEUE)queued++;if(started&&queued==0)outputUnderruns++;
+   for(int i=0;i<4&&queued<2&&running;i++)if(!(headers[i].dwFlags&WHDR_INQUEUE)){buffers[i]=mixFrame(limiter);if(waveOutWrite(output,&headers[i],sizeof(WAVEHDR))!=MMSYSERR_NOERROR){audioError=true;disconnect(L"Дыбыс құрылғысы ажыратылды. Қайта қосылуда…");break;}queued++;started=true;}
+   WaitForSingleObject(event,30);
+  }
+  waveOutReset(output);for(int i=0;i<prepared;i++)waveOutUnprepareHeader(output,&headers[i],sizeof(WAVEHDR));waveOutClose(output);CloseHandle(event);
  }
- bool outActive=false;ULONGLONG lastSpeech=0;
- void onMessage(const Bytes& b){
-   if(b.empty())return;
-   if(b[0]==2&&b.size()==2&&b[1]<5){if(connected)return;self=b[1];connected=true;setStatus(L"Бөлмеге қосылдыңыз");capture=std::thread([this]{captureLoop();});playback=std::thread([this]{playbackLoop();});return;}
-   if(b[0]==3&&b.size()>=2&&b[1]<=5){std::lock_guard<std::mutex> l(peerMutex);std::array<Member,5> next{};size_t p=2;for(int i=0;i<b[1];i++){if(p+2>b.size())return;int id=b[p++],n=b[p++];if(id>4||p+n>b.size())return;next[id]={true,wide(std::string((char*)b.data()+p,n)),members[id].spoke};p+=n;}for(int i=0;i<5;i++)if(!next[i].present||members[i].name!=next[i].name){auto& r=remotes[i];if(r.decoder)opus_decoder_destroy(r.decoder);r=Remote{};}members=next;return;}
-   if(b[0]==0x7f){setStatus(b.size()>1&&std::string((char*)b.data()+1,b.size()-1)=="ROOM_FULL"?L"Бөлме толы: ең көбі 5 адам":L"Сервер қосылуды қабылдамады");running=false;return;}
-   if(b[0]==0x21&&b.size()==5){ping=(DWORD)GetTickCount()-get32(b.data()+1);return;}
-   if(b[0]!=0x11||b.size()<35||b[1]>4)return;int id=b[1];uint32_t seq=get32(b.data()+2);Bytes encoded(b.begin()+18,b.end()-16),decoded;unsigned char tag[16];memcpy(tag,b.data()+b.size()-16,16);
-   if(!rx->crypt(false,encoded,b.data()+6,b.data()+2,decoded,tag)){decryptErrors++;return;}
-   std::lock_guard<std::mutex> l(peerMutex);auto& r=remotes[id];if(!members[id].present)return;if(r.received&&seq<=r.sequence)return;r.received=true;r.sequence=seq;
-   if(!r.decoder){int err;r.decoder=opus_decoder_create(RATE,1,&err);}if(!r.decoder)return;
-   std::array<short,SAMPLES> pcm{};int n=opus_decode(r.decoder,decoded.data(),(int)decoded.size(),pcm.data(),SAMPLES,0);if(n!=SAMPLES)return;
-   if(r.queue.size()>=5)r.queue.pop_front();r.queue.push_back(pcm);members[id].spoke=GetTickCount64();received++;bytesReceived+=b.size();
+ void onMessage(const Bytes& packet){
+  if(packet.empty())return;lastReceive=GetTickCount64();
+  if(packet[0]==2&&packet.size()==2&&packet[1]<5){if(connected)return;self=packet[1];connected=true;setStatus(L"Бөлмеге қосылдыңыз");transmit=std::thread([this]{transmitLoop();});capture=std::thread([this]{captureLoop();});playback=std::thread([this]{playbackLoop();});return;}
+  if(packet[0]==3&&packet.size()>=2&&packet[1]<=5){std::lock_guard<std::mutex> lock(peerMutex);std::array<Member,5> next{};size_t position=2;for(int i=0;i<packet[1];i++){if(position+2>packet.size())return;int id=packet[position++],length=packet[position++];if(id>4||position+length>packet.size())return;next[id]={true,wide(std::string((char*)packet.data()+position,length)),members[id].spoke};position+=length;}if(position!=packet.size())return;for(int i=0;i<5;i++)if(!next[i].present||members[i].name!=next[i].name){remotes[i].reset();peerVolume[i]=100;}members=next;return;}
+  if(packet[0]==127){setStatus(packet.size()>1&&std::string((char*)packet.data()+1,packet.size()-1)=="ROOM_FULL"?L"Бөлме толы: ең көбі 5 адам":L"Сервер қосылуды қабылдамады");running=false;return;}
+  if(packet[0]==33&&packet.size()==5){ping=(DWORD)GetTickCount()-get32(packet.data()+1);return;}
+  if(packet[0]!=17||packet.size()<35||packet[1]>4)return;int id=packet[1];uint32_t seq=get32(packet.data()+2);Bytes encoded(packet.begin()+18,packet.end()-16),decoded;unsigned char tag[16];memcpy(tag,packet.data()+packet.size()-16,16);
+  if(!rx->crypt(false,encoded,packet.data()+6,packet.data()+2,decoded,tag)){decryptErrors++;return;}
+  std::lock_guard<std::mutex> lock(peerMutex);if(!members[id].present)return;if(remotes[id].push(std::move(decoded),seq,GetTickCount64())){members[id].spoke=GetTickCount64();received++;bytesReceived+=packet.size();}
  }
  void networkLoop(){
-   HINTERNET session=0,connection=0,request=0;std::wstring why=L"Байланыс үзілді. Қайта қосылып көріңіз.";
-   try{
-    tx=std::make_unique<Crypto>();rx=std::make_unique<Crypto>();if(!tx->init(utf8(code))||!rx->init(utf8(code)))throw std::runtime_error("crypto");prefix=randomBytes(8);sequence=0;
-    std::wstring http=url;if(http.rfind(L"wss://",0)==0)http=L"https://"+http.substr(6);else if(http.rfind(L"ws://",0)==0)http=L"http://"+http.substr(5);else throw std::runtime_error("url");
-    URL_COMPONENTS u{};u.dwStructSize=sizeof u;u.dwHostNameLength=(DWORD)-1;u.dwUrlPathLength=(DWORD)-1;if(!WinHttpCrackUrl(http.c_str(),0,0,&u))throw std::runtime_error("url");std::wstring host(u.lpszHostName,u.dwHostNameLength),path(u.lpszUrlPath,u.dwUrlPathLength);if(path.empty()||path==L"/")path=L"/voice";
-    if(u.nScheme!=INTERNET_SCHEME_HTTPS&&host!=L"127.0.0.1"&&host!=L"localhost"){why=L"Интернетке қауіпсіз wss:// мекенжайы қажет";throw std::runtime_error("tls required");}
-    session=WinHttpOpen(L"BES/1.0",WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0);if(!session)throw std::runtime_error("session");WinHttpSetTimeouts(session,5000,5000,5000,15000);
-    connection=WinHttpConnect(session,host.c_str(),u.nPort,0);if(!connection)throw std::runtime_error("connect");request=WinHttpOpenRequest(connection,L"GET",path.c_str(),0,WINHTTP_NO_REFERER,WINHTTP_DEFAULT_ACCEPT_TYPES,u.nScheme==INTERNET_SCHEME_HTTPS?WINHTTP_FLAG_SECURE:0);if(!request)throw std::runtime_error("request");
-    WinHttpSetOption(request,WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET,0,0);
-    if(!WinHttpSendRequest(request,WINHTTP_NO_ADDITIONAL_HEADERS,0,0,0,0,0)||!WinHttpReceiveResponse(request,0))throw std::runtime_error("handshake");
-    HINTERNET socket=WinHttpWebSocketCompleteUpgrade(request,0);if(!socket)throw std::runtime_error("upgrade");
-    {std::lock_guard<std::mutex> l(sendMutex);if(running)ws=socket;else WinHttpCloseHandle(socket);}if(!running)throw std::runtime_error("cancel");
-    auto room=hash("BES/room/v1/"+utf8(code));auto n=utf8(name);Bytes hello{1,1};hello.insert(hello.end(),room.begin(),room.end());hello.push_back((unsigned char)n.size());hello.insert(hello.end(),n.begin(),n.end());if(!send(hello))throw std::runtime_error("hello");
-    unsigned char buf[2048];Bytes packet;
-    while(running){DWORD n=0;WINHTTP_WEB_SOCKET_BUFFER_TYPE type;DWORD e=WinHttpWebSocketReceive(socket,buf,sizeof buf,&n,&type);if(e)break;if(type==WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE)break;if(type!=WINHTTP_WEB_SOCKET_BINARY_FRAGMENT_BUFFER_TYPE&&type!=WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE)break;packet.insert(packet.end(),buf,buf+n);if(packet.size()>2048)break;if(type==WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE){onMessage(packet);packet.clear();}}
-   }catch(...){if(!connected&&running)why=L"Серверге қосылмады. Шақыруды тексеріп, қайта көріңіз.";}
-   bool wasRunning=running.exchange(false);connected=false;if(wasRunning)setStatus(why);
-   if(capture.joinable())capture.join();if(playback.joinable())playback.join();
-   {std::lock_guard<std::mutex> l(sendMutex);if(ws){WinHttpWebSocketClose(ws,WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS,0,0);WinHttpCloseHandle(ws);ws=0;}}
-   if(request)WinHttpCloseHandle(request);if(connection)WinHttpCloseHandle(connection);if(session)WinHttpCloseHandle(session);
-   {std::lock_guard<std::mutex> l(peerMutex);for(auto& r:remotes){if(r.decoder)opus_decoder_destroy(r.decoder);r=Remote{};}members={};}
+  HINTERNET session=nullptr,connection=nullptr,request=nullptr;
+  try{
+   tx=std::make_unique<Crypto>();rx=std::make_unique<Crypto>();if(!tx->init(utf8(code))||!rx->init(utf8(code)))throw std::runtime_error("crypto");prefix=randomBytes(8);sequence=0;
+   std::wstring http=url;if(http.rfind(L"wss://",0)==0)http=L"https://"+http.substr(6);else if(http.rfind(L"ws://",0)==0)http=L"http://"+http.substr(5);else throw std::runtime_error("url");
+   URL_COMPONENTS parsed{};parsed.dwStructSize=sizeof parsed;parsed.dwHostNameLength=parsed.dwUrlPathLength=(DWORD)-1;if(!WinHttpCrackUrl(http.c_str(),0,0,&parsed))throw std::runtime_error("url");std::wstring host(parsed.lpszHostName,parsed.dwHostNameLength),path(parsed.lpszUrlPath,parsed.dwUrlPathLength);if(path.empty()||path==L"/")path=L"/voice";
+   if(parsed.nScheme!=INTERNET_SCHEME_HTTPS&&host!=L"127.0.0.1")throw std::runtime_error("secure connection required");
+   session=WinHttpOpen(L"BES/0.3",WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0);if(!session)throw std::runtime_error("session");WinHttpSetTimeouts(session,5000,5000,4000,12000);
+   connection=WinHttpConnect(session,host.c_str(),parsed.nPort,0);if(!connection)throw std::runtime_error("connect");request=WinHttpOpenRequest(connection,L"GET",path.c_str(),nullptr,WINHTTP_NO_REFERER,WINHTTP_DEFAULT_ACCEPT_TYPES,parsed.nScheme==INTERNET_SCHEME_HTTPS?WINHTTP_FLAG_SECURE:0);if(!request)throw std::runtime_error("request");
+   WinHttpSetOption(request,WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET,nullptr,0);if(!WinHttpSendRequest(request,WINHTTP_NO_ADDITIONAL_HEADERS,0,nullptr,0,0,0)||!WinHttpReceiveResponse(request,nullptr))throw std::runtime_error("handshake");
+   HINTERNET socket=WinHttpWebSocketCompleteUpgrade(request,0);if(!socket)throw std::runtime_error("upgrade");DWORD timeout=2000;WinHttpSetOption(socket,WINHTTP_OPTION_WEB_SOCKET_CLOSE_TIMEOUT,&timeout,sizeof timeout);
+   {std::lock_guard<std::mutex> lock(sendMutex);if(running)ws=socket;else WinHttpCloseHandle(socket);}if(!running)throw std::runtime_error("cancel");
+   auto room=hash("BES/room/v1/"+utf8(code));auto nickname=utf8(name);Bytes hello{1,1};hello.insert(hello.end(),room.begin(),room.end());hello.push_back((unsigned char)nickname.size());hello.insert(hello.end(),nickname.begin(),nickname.end());if(!send(hello))throw std::runtime_error("hello");
+   unsigned char buffer[2048];Bytes packet;
+   while(running){DWORD length=0;WINHTTP_WEB_SOCKET_BUFFER_TYPE type;DWORD error=WinHttpWebSocketReceive(socket,buffer,sizeof buffer,&length,&type);if(error||type==WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE)break;if(type!=WINHTTP_WEB_SOCKET_BINARY_FRAGMENT_BUFFER_TYPE&&type!=WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE)break;packet.insert(packet.end(),buffer,buffer+length);if(packet.size()>2048)break;if(type==WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE){onMessage(packet);packet.clear();}}
+  }catch(...){if(running)setStatus(L"Серверге қосылмады. Өзі қайта қосылады.");}
+  bool active=running.exchange(false);connected=false;if(active)setStatus(L"Байланыс жаңартылуда…");sendWake.notify_all();
+  if(capture.joinable())capture.join();if(playback.joinable())playback.join();if(transmit.joinable())transmit.join();
+  {std::lock_guard<std::mutex> lock(sendMutex);if(ws){WinHttpWebSocketClose(ws,WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS,nullptr,0);WinHttpCloseHandle(ws);ws=nullptr;}}
+  if(request)WinHttpCloseHandle(request);if(connection)WinHttpCloseHandle(connection);if(session)WinHttpCloseHandle(session);
+  {std::lock_guard<std::mutex> lock(peerMutex);for(auto& remote:remotes)remote.reset();members={};}
  }
 public:
  std::atomic<bool> running{false},connected{false},muted{false},deafened{false},pushToTalk{false},wasTalking{false},audioError{false};
- std::atomic<int> pttKey{VK_XBUTTON1},gate{200},volume{100},micLevel{0},self{-1};std::atomic<DWORD> ping{0};
- std::atomic<uint64_t> sent{0},received{0},mixed{0},decryptErrors{0},bytesSent{0},bytesReceived{0};
+ std::atomic<int> pttKey{VK_XBUTTON1},gate{100},volume{100},noiseMode{1},micLevel{0},rawMicLevel{0},self{-1};std::atomic<int> peerVolume[5]{{100},{100},{100},{100},{100}};std::atomic<DWORD> ping{0};
+ std::atomic<uint64_t> sent{0},received{0},mixed{0},decryptErrors{0},bytesSent{0},bytesReceived{0},sendDropped{0},captureDropped{0},outputUnderruns{0};
  ~VoiceSession(){stop();}
- void start(const std::wstring& server,const std::wstring& secret,const std::wstring& nick,unsigned inDev=WAVE_MAPPER,unsigned outDev=WAVE_MAPPER,bool bot=false){stop();url=server;code=secret;name=nick;inputDevice=inDev;outputDevice=outDev;synthetic=bot;self=-1;sent=0;received=0;mixed=0;decryptErrors=0;bytesSent=0;bytesReceived=0;audioError=false;outActive=false;lastSpeech=0;running=true;setStatus(L"Серверге қосылуда…");network=std::thread([this]{networkLoop();});}
- void stop(){running=false;{std::lock_guard<std::mutex> l(sendMutex);if(ws)WinHttpWebSocketShutdown(ws,WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS,0,0);}if(network.joinable())network.join();connected=false;setStatus(L"Қосылмаған");}
- void heartbeat(){if(connected){Bytes b{0x20};put32(b,(DWORD)GetTickCount());send(b);}}
- std::wstring getStatus(){std::lock_guard<std::mutex> l(statusMutex);return status;}
- std::array<Member,5> getMembers(){std::lock_guard<std::mutex> l(peerMutex);return members;}
+ void start(const std::wstring& server,const std::wstring& secret,const std::wstring& nick,unsigned inDev=WAVE_MAPPER,unsigned outDev=WAVE_MAPPER,bool bot=false){stop();url=server;code=secret;name=nick;inputDevice=inDev;outputDevice=outDev;synthetic=bot;self=-1;sent=received=mixed=decryptErrors=bytesSent=bytesReceived=sendDropped=captureDropped=outputUnderruns=0;audioError=false;micLevel=rawMicLevel=0;lastReceive=GetTickCount64();{std::lock_guard<std::mutex> lock(queueMutex);outbound.clear();}running=true;setStatus(L"Серверге қосылуда…");network=std::thread([this]{networkLoop();});}
+ void stop(){running=false;sendWake.notify_all();{std::lock_guard<std::mutex> lock(sendMutex);if(ws)WinHttpWebSocketShutdown(ws,WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS,nullptr,0);}if(network.joinable())network.join();connected=false;}
+ void heartbeat(){if(connected){if(GetTickCount64()-lastReceive>12000){disconnect(L"Сервер жауап бермеді. Қайта қосылуда…");return;}Bytes packet{32};put32(packet,(DWORD)GetTickCount());if(!send(packet))disconnect(L"Байланыс жаңартылуда…");}}
+ std::wstring getStatus(){std::lock_guard<std::mutex> lock(statusMutex);return status;}
+ std::array<Member,5> getMembers(){std::lock_guard<std::mutex> lock(peerMutex);return members;}
 };

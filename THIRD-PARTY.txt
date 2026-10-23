@@ -1,9 +1,15 @@
-BES 0.2 contains or uses:
+BES 0.3 contains or uses:
 
 Opus 1.6.1, copyright Xiph.Org Foundation and contributors, BSD license.
 https://opus-codec.org/
 Source archive SHA256:
 6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1
+
+SpeexDSP 1.2.1, copyright Xiph.org Foundation, Jean-Marc Valin and contributors,
+BSD-style license. Noise preprocessor and its FFT/filterbank support.
+https://www.speex.org/
+Source archive SHA256:
+8c777343e4a6399569c72abc38a95b24db56882c83dbdb6c6424a5f4aeb54d3d
 
 LLVM libc++/libc++abi and Zig runtime, Apache-2.0 with LLVM exceptions / MIT.
 Built using Zig 0.14.1 and the MinGW-w64 Windows runtime.

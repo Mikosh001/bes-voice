@@ -1,0 +1,35 @@
+{
+  "passed": true,
+  "sampleSource": "https://www.opus-codec.org/examples/ (speech_orig.wav, local evaluation only; not redistributed)",
+  "scope": "16 kHz real speech plus deterministic stationary white noise and hum; not a test of all background sounds or actual microphone hardware",
+  "modes": {
+    "0": {
+      "stationaryNoiseReductionDb": 0.0,
+      "speechCorrelation": 0.5598,
+      "speechGainDb": -0.06,
+      "estimatedFilterDelayMs": 0.0
+    },
+    "1": {
+      "stationaryNoiseReductionDb": 19.9,
+      "speechCorrelation": 0.8913,
+      "speechGainDb": -1.98,
+      "estimatedFilterDelayMs": 20.0
+    },
+    "2": {
+      "stationaryNoiseReductionDb": 26.32,
+      "speechCorrelation": 0.8998,
+      "speechGainDb": -2.04,
+      "estimatedFilterDelayMs": 20.0
+    }
+  },
+  "dspChecks": {
+    "passed": true,
+    "stationaryNoiseReductionDb": 20.0314,
+    "noiseBypassExact": true,
+    "speechGateHoldAndMutePassed": true,
+    "fourSpeakerMixPeak": 27000,
+    "jitterGapConcealed": true,
+    "jitterQueueBounded": true,
+    "replayRejected": true
+  }
+}

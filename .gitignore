@@ -10,3 +10,7 @@ native/build/
 *.exe
 *.zip
 *.res
+__pycache__/
+*.pyc
+*.pcm
+*.wav

@@ -24,41 +24,41 @@
     }
   },
   "survivorsRunningWhenFirstExited": true,
-  "elapsedSeconds": 24.11,
+  "elapsedSeconds": 24.27,
   "clients": [
     {
       "joins": 1,
       "attempts": 1,
       "maxPeers": 5,
-      "received": 1459,
+      "received": 1419,
       "decryptErrors": 0
     },
     {
       "joins": 1,
       "attempts": 1,
       "maxPeers": 5,
-      "received": 3866,
+      "received": 3832,
       "decryptErrors": 0
     },
     {
       "joins": 1,
       "attempts": 1,
       "maxPeers": 5,
-      "received": 3865,
+      "received": 3834,
       "decryptErrors": 0
     },
     {
       "joins": 1,
       "attempts": 1,
       "maxPeers": 5,
-      "received": 3863,
+      "received": 3835,
       "decryptErrors": 0
     },
     {
       "joins": 1,
       "attempts": 1,
       "maxPeers": 5,
-      "received": 3865,
+      "received": 3839,
       "decryptErrors": 0
     }
   ],

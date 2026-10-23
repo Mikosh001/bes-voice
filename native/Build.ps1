@@ -27,6 +27,13 @@ if (-not (Test-Path -LiteralPath "$opusDirectory/CMakeLists.txt")) {
     tar -xf $opusArchive -C $dependencyDirectory
     if ($LASTEXITCODE) { throw 'Opus extraction failed' }
 }
+$speexDirectory = Join-Path $dependencyDirectory 'speexdsp-1.2.1'
+if (-not (Test-Path -LiteralPath "$speexDirectory/libspeexdsp/preprocess.c")) {
+    $speexArchive = Join-Path $dependencyDirectory 'speexdsp.tar.gz'
+    Get-VerifiedFile 'https://downloads.xiph.org/releases/speex/speexdsp-1.2.1.tar.gz' $speexArchive '8c777343e4a6399569c72abc38a95b24db56882c83dbdb6c6424a5f4aeb54d3d'
+    tar -xf $speexArchive -C $dependencyDirectory
+    if ($LASTEXITCODE) { throw 'SpeexDSP extraction failed' }
+}
 $zig = (Join-Path $zigDirectory 'zig.exe').Replace('\','/')
 $ar = Join-Path $dependencyDirectory 'zig-ar.cmd'
 $ranlib = Join-Path $dependencyDirectory 'zig-ranlib.cmd'
@@ -37,11 +44,13 @@ cmake -S $opusDirectory -B $opusBuild -G Ninja "-DCMAKE_C_COMPILER=$zig" '-DCMAK
 if ($LASTEXITCODE) { throw 'CMake configuration failed' }
 cmake --build $opusBuild -j 4
 if ($LASTEXITCODE) { throw 'Opus build failed' }
+$speexBuild = Join-Path $buildDirectory 'speex'
+& "$sourceDirectory/Build-DSP.ps1" -Zig $zig -Source $speexDirectory -Output $speexBuild
 Push-Location $sourceDirectory
 try {
     & $zig rc /fo "$buildDirectory/app.res" app.rc
     if ($LASTEXITCODE) { throw 'Resource build failed' }
-    & $zig c++ -target x86_64-windows-gnu -std=c++17 -O2 -DNDEBUG -DUNICODE -D_UNICODE -I "$opusDirectory/include" main.cpp "$buildDirectory/app.res" "$opusBuild/libopus.a" -o "$buildDirectory/BES.exe" '-Wl,--subsystem,windows' -municode -lwinhttp -lbcrypt -lcrypt32 -lws2_32 -lwinmm -lshell32 -lgdi32 -luser32 -lcomctl32 -lpsapi -static -s
+    & $zig c++ -target x86_64-windows-gnu -std=c++17 -O2 -DNDEBUG -DUNICODE -D_UNICODE -I "$opusDirectory/include" -I "$speexDirectory/include" main.cpp "$buildDirectory/app.res" "$opusBuild/libopus.a" "$speexBuild/libspeexdsp.a" -o "$buildDirectory/BES.exe" '-Wl,--subsystem,windows' -municode -lwinhttp -lbcrypt -lcrypt32 -lws2_32 -lwinmm -lavrt -lshell32 -lgdi32 -luser32 -lcomctl32 -lpsapi -static -s
     if ($LASTEXITCODE) { throw 'BES build failed' }
 } finally { Pop-Location }
 Copy-Item -LiteralPath "$sourceDirectory/../LICENSE.txt","$sourceDirectory/../THIRD-PARTY.txt" -Destination $buildDirectory -Force
