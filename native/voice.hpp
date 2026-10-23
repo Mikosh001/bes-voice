@@ -25,9 +25,9 @@ class VoiceSession {
  void encodeFrame(OpusEncoder* encoder,NoiseFilter& filter,SpeechGate& speech,AudioFrame pcm){
   int raw=audioRms(pcm.data());filter.process(pcm,noiseMode.load());micLevel=audioRms(pcm.data());rawMicLevel=raw;
   bool allowed=!muted&&(!pushToTalk||(GetAsyncKeyState(pttKey.load())&0x8000));
-  bool active=speech.process(pcm,gate.load(),allowed,GetTickCount64());wasTalking=active;
-  if(!active)return;
-  unsigned char compressed[1275];int n=opus_encode(encoder,pcm.data(),SAMPLES,compressed,sizeof compressed);if(n<=2)return;
+  bool active=speech.process(pcm,gate.load(),allowed,GetTickCount64());wasTalking=active&&micLevel.load()>=100;
+  // Encode zeroed gated/muted frames too: keep the codec and playout clocks continuous.
+  unsigned char compressed[1275];int n=opus_encode(encoder,pcm.data(),SAMPLES,compressed,sizeof compressed);if(n<=0)return;
   uint32_t seq=sequence++;if(sequence==0){disconnect(L"Байланыс жаңартылуда…");return;}
   Bytes packet{0x10};put32(packet,seq);Bytes nonce=prefix;put32(nonce,seq);packet.insert(packet.end(),nonce.begin(),nonce.end());Bytes encoded(compressed,compressed+n),encrypted;unsigned char tag[16];
   if(!tx->crypt(true,encoded,nonce.data(),packet.data()+1,encrypted,tag))return;
@@ -35,9 +35,8 @@ class VoiceSession {
   {std::lock_guard<std::mutex> lock(queueMutex);if(outbound.size()>=3){outbound.pop_front();sendDropped++;}outbound.push_back(std::move(packet));}sendWake.notify_one();
  }
  void captureLoop(){
-  AudioPriority priority;int error=0;auto* encoder=opus_encoder_create(RATE,1,OPUS_APPLICATION_VOIP,&error);if(!encoder){audioError=true;disconnect(L"Дауыс кодегі ашылмады");return;}
+  AudioPriority priority;auto* encoder=createVoiceEncoder();if(!encoder){audioError=true;disconnect(L"Дауыс кодегі ашылмады");return;}
   NoiseFilter filter;SpeechGate speech;
-  opus_encoder_ctl(encoder,OPUS_SET_BITRATE(24000));opus_encoder_ctl(encoder,OPUS_SET_COMPLEXITY(2));opus_encoder_ctl(encoder,OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));opus_encoder_ctl(encoder,OPUS_SET_DTX(synthetic?0:1));opus_encoder_ctl(encoder,OPUS_SET_VBR(1));opus_encoder_ctl(encoder,OPUS_SET_INBAND_FEC(1));opus_encoder_ctl(encoder,OPUS_SET_PACKET_LOSS_PERC(5));
   if(synthetic){AudioFrame pcm;uint64_t sample=0;auto tick=std::chrono::steady_clock::now();while(running){for(int i=0;i<SAMPLES;i++,sample++)pcm[i]=(short)(5000*sin(2*3.141592653589793*440*sample/RATE));encodeFrame(encoder,filter,speech,pcm);tick+=std::chrono::milliseconds(20);if(std::chrono::steady_clock::now()-tick>std::chrono::milliseconds(60))tick=std::chrono::steady_clock::now();std::this_thread::sleep_until(tick);}opus_encoder_destroy(encoder);return;}
   HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr);HWAVEIN input=nullptr;auto f=format();MMRESULT result=waveInOpen(&input,inputDevice,&f,(DWORD_PTR)event,0,CALLBACK_EVENT|WAVE_FORMAT_DIRECT);
   if(result!=MMSYSERR_NOERROR)result=waveInOpen(&input,inputDevice,&f,(DWORD_PTR)event,0,CALLBACK_EVENT);
@@ -56,7 +55,7 @@ class VoiceSession {
  }
  AudioFrame mixFrame(MixLimiter& limiter){
   std::array<int,SAMPLES> mix{};bool any=false;
-  {std::lock_guard<std::mutex> lock(peerMutex);for(int id=0;id<5;id++){AudioFrame pcm;if(remotes[id].pull(pcm,GetTickCount64())){int gain=peerVolume[id];for(int i=0;i<SAMPLES;i++)mix[i]+=pcm[i]*gain/100;any=true;}}}
+  {std::lock_guard<std::mutex> lock(peerMutex);for(int id=0;id<5;id++){AudioFrame pcm;if(remotes[id].pull(pcm,GetTickCount64())){if(audioRms(pcm.data())>=100)members[id].spoke=GetTickCount64();int gain=peerVolume[id];for(int i=0;i<SAMPLES;i++)mix[i]+=pcm[i]*gain/100;any=true;}}}
   if(any)mixed++;return limiter.process(mix,deafened?0:volume.load());
  }
  void playbackLoop(){
@@ -81,7 +80,7 @@ class VoiceSession {
   if(packet[0]==33&&packet.size()==5){ping=(DWORD)GetTickCount()-get32(packet.data()+1);return;}
   if(packet[0]!=17||packet.size()<35||packet[1]>4)return;int id=packet[1];uint32_t seq=get32(packet.data()+2);Bytes encoded(packet.begin()+18,packet.end()-16),decoded;unsigned char tag[16];memcpy(tag,packet.data()+packet.size()-16,16);
   if(!rx->crypt(false,encoded,packet.data()+6,packet.data()+2,decoded,tag)){decryptErrors++;return;}
-  std::lock_guard<std::mutex> lock(peerMutex);if(!members[id].present)return;if(remotes[id].push(std::move(decoded),seq,GetTickCount64())){members[id].spoke=GetTickCount64();received++;bytesReceived+=packet.size();}
+  std::lock_guard<std::mutex> lock(peerMutex);if(!members[id].present)return;if(remotes[id].push(std::move(decoded),seq,GetTickCount64())){received++;bytesReceived+=packet.size();}
  }
  void networkLoop(){
   HINTERNET session=nullptr,connection=nullptr,request=nullptr;
@@ -90,7 +89,7 @@ class VoiceSession {
    std::wstring http=url;if(http.rfind(L"wss://",0)==0)http=L"https://"+http.substr(6);else if(http.rfind(L"ws://",0)==0)http=L"http://"+http.substr(5);else throw std::runtime_error("url");
    URL_COMPONENTS parsed{};parsed.dwStructSize=sizeof parsed;parsed.dwHostNameLength=parsed.dwUrlPathLength=(DWORD)-1;if(!WinHttpCrackUrl(http.c_str(),0,0,&parsed))throw std::runtime_error("url");std::wstring host(parsed.lpszHostName,parsed.dwHostNameLength),path(parsed.lpszUrlPath,parsed.dwUrlPathLength);if(path.empty()||path==L"/")path=L"/voice";
    if(parsed.nScheme!=INTERNET_SCHEME_HTTPS&&host!=L"127.0.0.1")throw std::runtime_error("secure connection required");
-   session=WinHttpOpen(L"BES/0.3",WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0);if(!session)throw std::runtime_error("session");WinHttpSetTimeouts(session,5000,5000,4000,12000);
+   session=WinHttpOpen(L"BES/0.4",WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0);if(!session)throw std::runtime_error("session");WinHttpSetTimeouts(session,5000,5000,4000,12000);
    connection=WinHttpConnect(session,host.c_str(),parsed.nPort,0);if(!connection)throw std::runtime_error("connect");request=WinHttpOpenRequest(connection,L"GET",path.c_str(),nullptr,WINHTTP_NO_REFERER,WINHTTP_DEFAULT_ACCEPT_TYPES,parsed.nScheme==INTERNET_SCHEME_HTTPS?WINHTTP_FLAG_SECURE:0);if(!request)throw std::runtime_error("request");
    WinHttpSetOption(request,WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET,nullptr,0);if(!WinHttpSendRequest(request,WINHTTP_NO_ADDITIONAL_HEADERS,0,nullptr,0,0,0)||!WinHttpReceiveResponse(request,nullptr))throw std::runtime_error("handshake");
    HINTERNET socket=WinHttpWebSocketCompleteUpgrade(request,0);if(!socket)throw std::runtime_error("upgrade");DWORD timeout=2000;WinHttpSetOption(socket,WINHTTP_OPTION_WEB_SOCKET_CLOSE_TIMEOUT,&timeout,sizeof timeout);
@@ -107,7 +106,7 @@ class VoiceSession {
  }
 public:
  std::atomic<bool> running{false},connected{false},muted{false},deafened{false},pushToTalk{false},wasTalking{false},audioError{false};
- std::atomic<int> pttKey{VK_XBUTTON1},gate{100},volume{100},noiseMode{1},micLevel{0},rawMicLevel{0},self{-1};std::atomic<int> peerVolume[5]{{100},{100},{100},{100},{100}};std::atomic<DWORD> ping{0};
+ std::atomic<int> pttKey{VK_XBUTTON1},gate{0},volume{100},noiseMode{0},micLevel{0},rawMicLevel{0},self{-1};std::atomic<int> peerVolume[5]{{100},{100},{100},{100},{100}};std::atomic<DWORD> ping{0};
  std::atomic<uint64_t> sent{0},received{0},mixed{0},decryptErrors{0},bytesSent{0},bytesReceived{0},sendDropped{0},captureDropped{0},outputUnderruns{0};
  ~VoiceSession(){stop();}
  void start(const std::wstring& server,const std::wstring& secret,const std::wstring& nick,unsigned inDev=WAVE_MAPPER,unsigned outDev=WAVE_MAPPER,bool bot=false){stop();url=server;code=secret;name=nick;inputDevice=inDev;outputDevice=outDev;synthetic=bot;self=-1;sent=received=mixed=decryptErrors=bytesSent=bytesReceived=sendDropped=captureDropped=outputUnderruns=0;audioError=false;micLevel=rawMicLevel=0;lastReceive=GetTickCount64();{std::lock_guard<std::mutex> lock(queueMutex);outbound.clear();}running=true;setStatus(L"Серверге қосылуда…");network=std::thread([this]{networkLoop();});}

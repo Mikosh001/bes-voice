@@ -1,4 +1,4 @@
-# BES Voice 0.3
+# BES Voice 0.4
 
 A small native Windows voice app for five friends, backed by an independent
 cloud relay. Closing any client leaves the other participants connected.
@@ -69,19 +69,31 @@ change Windows autostart settings.
 
 ## Cleaner voice and bounded latency
 
-The default Balanced noise filter uses a 90 Hz high-pass and SpeexDSP spectral
-suppression, at 16 kHz with 20 ms frames. Strong and bypass modes are available.
-AGC is disabled so background noise is not automatically amplified. A soft
-speech gate uses hysteresis and a 280 ms hold to preserve word endings.
-Stationary hum and fan noise can be reduced; background speech and arbitrary
-keyboard clicks cannot be guaranteed to disappear. This is not speaker isolation
-or acoustic echo cancellation. The denoiser adds about 20 ms of algorithmic delay.
+Version 0.4 uses 48 kHz mono, 20 ms (960 sample) frames, Opus AUDIO at a target
+64 kbit/s, fullband and complexity 4. It replaces the 16 kHz / 24 kbit/s VOIP
+profile, which limited bandwidth and changed voice timbre.
+
+The default Natural profile bypasses denoising and the amplitude gate. On the
+first 0.4 launch the older noise/gate settings migrate to Natural; later user
+changes persist. Device, nickname and other preferences are preserved.
+Optional Light and Strong SpeexDSP modes use -12/-22 dB suppression and a
+time-aligned dry path to preserve timbre. AGC remains disabled. A 60 Hz high-pass
+is applied only to the wet path. Filtering adds about 20 ms; bypass adds none.
+Stationary noise can be reduced; background speech and arbitrary clicks cannot
+be guaranteed to disappear. This is not acoustic echo cancellation.
+
+All valid Opus frames, including one-byte DTX packets and zeroed muted/gated
+frames, are transmitted. Dropping short packets previously desynchronized the
+encoder and playback timelines. Playout now advances the sequence deadline on
+concealment and discards late frames even after rebuffering, instead of playing
+old sound after its deadline. Voice indicators use decoded audio energy.
 
 Mic capture and network transmission have separate threads. The outgoing voice
 queue keeps at most three frames and discards stale audio under backpressure.
 The receive buffer keeps at most six encoded frames, adapts its initial target
 to two or three frames, and catches up after bursts. Decoding happens on the
-playback clock, with short Opus PLC/FEC recovery when sequence gaps are detected.
+playback clock, with short Opus concealment when sequence gaps are detected.
+FEC is requested where the encoded mode supports it; CELT may use PLC instead.
 Long gaps fade out rather than repeating audio indefinitely. TCP still has
 head-of-line blocking, so these bounds do not guarantee end-to-end latency.
 
@@ -90,6 +102,11 @@ a local volume button cycling through 0/50/75/100/125/150%. Local volume resets
 when the slot changes participant. Device selections and noise mode are saved.
 Hardware audio uses MMCSS Audio threads and a two-frame output queue. The native
 UI uses a cached paint buffer and does not repaint while minimized.
+
+Update all five clients for the new capture quality. The relay wire format and
+room are unchanged; an old 16 kHz sender still cannot provide fullband speech.
+The higher bitrate and continuous silence clock consume more bandwidth. Render
+Free workspace quotas still apply, including during long connected sessions.
 
 ## Verification and limits
 
@@ -105,12 +122,16 @@ synthetic Opus audio. The first left after eight seconds; the remaining
 four continued until 24 seconds, with zero decryption errors. See
 `public-results.json`.
 
-`speech-filter-results.json` evaluates a public Opus speech sample mixed with
-deterministic white noise and hum, without recording a microphone. The sample
-itself is not redistributed. `audio-results.json` checks noise reduction,
+`voice-quality-results.json` evaluates clean speech through the actual codec,
+optional filtering with added noise, and a 12 kHz passband probe.
+`timing-results.json` covers continuous speech/silence, dropped packets and a
+180 ms ordered transport stall, including monotonic playback deadlines.
+The public Opus speech sample itself is not redistributed. The previous 0.3
+filter report is archived under `verification/0.3/`. `audio-results.json` checks noise reduction,
 bypass, speech-gate hold and mute, mix headroom, sequence-gap concealment,
 replay rejection and queue bounds. Run `BES.exe --audio-test report.json` after
-building. UI demonstration builds can define `BES_UI_DEMO`; they do not connect,
+building. Run `BES.exe --timing-test report.json` for the timing simulation.
+UI demonstration builds can define `BES_UI_DEMO`; they do not connect,
 open audio devices or change saved preferences. Their participant rows are fixtures.
 
 Actual microphones and CS frame-time impact must be verified separately.

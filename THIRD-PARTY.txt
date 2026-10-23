@@ -1,4 +1,4 @@
-BES 0.3 contains or uses:
+BES 0.4 contains or uses:
 
 Opus 1.6.1, copyright Xiph.Org Foundation and contributors, BSD license.
 https://opus-codec.org/

@@ -2,6 +2,10 @@
 inline int processAudio(const std::wstring& source,const std::wstring& destination,int mode){
  std::ifstream input(source.c_str(),std::ios::binary);std::ofstream output(destination.c_str(),std::ios::binary);if(!input||!output)return 2;NoiseFilter filter;AudioFrame pcm;uint64_t frames=0;while(input.read((char*)pcm.data(),sizeof pcm)){filter.process(pcm,mode);output.write((char*)pcm.data(),sizeof pcm);frames++;}return frames&&input.gcount()==0&&output?0:2;
 }
+inline int roundTripAudio(const std::wstring& source,const std::wstring& destination,int mode){
+ std::ifstream input(source.c_str(),std::ios::binary);std::ofstream output(destination.c_str(),std::ios::binary);if(!input||!output)return 2;DspFloatScope floatingPoint;NoiseFilter filter;auto* encoder=createVoiceEncoder();int error;auto* decoder=opus_decoder_create(RATE,1,&error);if(!encoder||!decoder)return 2;AudioFrame pcm,decoded;unsigned char packet[1275];int status=0;
+ while(input.read((char*)pcm.data(),sizeof pcm)){filter.process(pcm,mode);int length=opus_encode(encoder,pcm.data(),SAMPLES,packet,sizeof packet);if(length<=0||opus_decode(decoder,packet,length,decoded.data(),SAMPLES,0)!=SAMPLES){status=2;break;}output.write((char*)decoded.data(),sizeof decoded);}opus_encoder_destroy(encoder);opus_decoder_destroy(decoder);return status;
+}
 inline int audioTest(const std::wstring& path){
  NoiseFilter filter;double before=0,after=0;uint32_t random=527;AudioFrame pcm;
  for(int frame=0;frame<300;frame++){for(int i=0;i<SAMPLES;i++){random=random*1664525+1013904223;pcm[i]=(short)(int((random>>16)&65535)-32768)/24;}auto original=pcm;filter.process(pcm,1);if(frame>150)for(int i=0;i<SAMPLES;i++){before+=double(original[i])*original[i];after+=double(pcm[i])*pcm[i];}}
@@ -14,6 +18,8 @@ inline int audioTest(const std::wstring& path){
  PlayoutBuffer jitter;jitter.push(packets[0],0,1000);jitter.push(packets[1],1,1020);AudioFrame out;bool begins=jitter.pull(out,1040);jitter.pull(out,1060);jitter.push(packets[3],3,1061);bool conceals=jitter.pull(out,1080)&&jitter.concealed>0;bool rejectsReplay=!jitter.push(packets[3],3,1081);
  for(uint32_t i=4;i<32;i++)jitter.push(packets[i],i,1100+i);bool bounded=jitter.queued()<=6&&jitter.dropped>0;jitter.pull(out,1160);bounded=bounded&&jitter.queued()<=3;
  NoiseFilter switched;AudioFrame stale;stale.fill(5000);switched.process(stale,1);stale.fill(5000);switched.process(stale,1);stale.fill(0);switched.process(stale,0);switched.process(stale,1);bool freshAfterToggle=audioRms(stale.data())==0;
- bool passed=reduction>8&&bypassExact&&opens&&holds&&shuts&&muted&&peak<=27001&&begins&&conceals&&bounded&&rejectsReplay&&freshAfterToggle;
+ PlayoutBuffer deadline;deadline.push(packets[0],0,1000);deadline.push(packets[1],1,1020);deadline.pull(out,1040);deadline.pull(out,1060);deadline.pull(out,1080);deadline.push(packets[2],2,1085);deadline.push(packets[3],3,1090);deadline.pull(out,1100);bool lateDiscarded=deadline.dropped==1;
+ auto* clockEncoder=createVoiceEncoder();auto* clockDecoder=opus_decoder_create(RATE,1,&error);bool silenceClock=true;uint32_t frames=0;for(int f=0;f<150;f++){pcm.fill(0);if(f<20||f>120)for(int i=0;i<SAMPLES;i++)pcm[i]=(short)(3500*sin((f*SAMPLES+i)*.07));unsigned char bytes[1275];int count=opus_encode(clockEncoder,pcm.data(),SAMPLES,bytes,sizeof bytes);silenceClock&=count>0&&opus_decode(clockDecoder,bytes,count,out.data(),SAMPLES,0)==SAMPLES;frames++;}opus_encoder_destroy(clockEncoder);opus_decoder_destroy(clockDecoder);silenceClock&=frames==150;
+ bool passed=reduction>3&&bypassExact&&opens&&holds&&shuts&&muted&&peak<=27001&&begins&&conceals&&bounded&&rejectsReplay&&freshAfterToggle&&lateDiscarded&&silenceClock;
  std::ofstream report(path.c_str());report<<"{\"passed\":"<<(passed?"true":"false")<<",\"stationaryNoiseReductionDb\":"<<reduction<<",\"noiseBypassExact\":"<<(bypassExact?"true":"false")<<",\"speechGateHoldAndMutePassed\":"<<(opens&&holds&&shuts&&muted?"true":"false")<<",\"fourSpeakerMixPeak\":"<<peak<<",\"jitterGapConcealed\":"<<(conceals?"true":"false")<<",\"jitterQueueBounded\":"<<(bounded?"true":"false")<<",\"replayRejected\":"<<(rejectsReplay?"true":"false")<<"}";return passed?0:2;
 }

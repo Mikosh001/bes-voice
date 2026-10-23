@@ -1,0 +1,45 @@
+{
+  "passed": true,
+  "sampleRate": 48000,
+  "frameSamples": 960,
+  "targetBitrate": 64000,
+  "defaultProfile": "Natural: filter and gate bypass; Opus AUDIO fullband; continuous 20ms packets including silence",
+  "cleanSpeechCodecRoundtrip": {
+    "delayMs": 6.5,
+    "correlation": 0.9964,
+    "gainDb": -0.05
+  },
+  "twelveKHzProbeAmplitude": 4004.44,
+  "noiseModes": {
+    "0": {
+      "delayMs": 0.0,
+      "correlation": 0.56489,
+      "gainDb": -0.0,
+      "stationaryNoiseReductionDb": 0.0
+    },
+    "1": {
+      "delayMs": 20.0,
+      "correlation": 0.78187,
+      "gainDb": -0.72,
+      "stationaryNoiseReductionDb": 6.45
+    },
+    "2": {
+      "delayMs": 20.0,
+      "correlation": 0.91474,
+      "gainDb": -1.03,
+      "stationaryNoiseReductionDb": 15.5
+    }
+  },
+  "dsp": {
+    "passed": true,
+    "stationaryNoiseReductionDb": 6.42116,
+    "noiseBypassExact": true,
+    "speechGateHoldAndMutePassed": true,
+    "fourSpeakerMixPeak": 27000,
+    "jitterGapConcealed": true,
+    "jitterQueueBounded": true,
+    "replayRejected": true
+  },
+  "scope": "Offline public speech sample and generated probes, not a hardware microphone or perceptual listening test",
+  "sampleSource": "https://www.opus-codec.org/examples/; original audio not redistributed"
+}

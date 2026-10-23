@@ -27,6 +27,8 @@ test('five participants, host departure, room identity and slot reuse',async()=>
   const voice=Buffer.concat([Buffer.from([16,1,0,0,0]),randomBytes(12),randomBytes(60),randomBytes(16)]);peers[1].ws.send(voice);
   for(let i=2;i<5;i++){const b=await wait(peers[i],b=>b[0]===17);assert.equal(b[1],1);assert.deepEqual(b.subarray(2),voice.subarray(1));}
   assert(!peers[1].messages.some(b=>b[0]===17));
+  const dtx=Buffer.concat([Buffer.from([16,2,0,0,0]),randomBytes(12),randomBytes(1),randomBytes(16)]);peers[1].ws.send(dtx);
+  for(let i=2;i<5;i++){const b=await wait(peers[i],b=>b[0]===17);assert.equal(b.length,35);assert.deepEqual(b.subarray(2),dtx.subarray(1));}
   const next=await connect(url,room,'new friend');peers.push(next);assert.equal((await wait(next,b=>b[0]===2))[1],0);
   next.ws.send(Buffer.from([32,1,2,3,4]));assert.deepEqual(await wait(next,b=>b[0]===33),Buffer.from([33,1,2,3,4]));
  }finally{for(const p of peers)p.ws.terminate();await relay.close();}

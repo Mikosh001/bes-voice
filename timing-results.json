@@ -1,0 +1,1 @@
+{"passed":true,"normalContinuousSpeechAndSilence":{"finished":true,"concealed":0,"dropped":0},"packetLossAnd180msStall":{"finished":true,"timelineNeverRewinds":true,"concealed":6,"dropped":11,"peakQueuePackets":6,"longestRebufferMs":180}}

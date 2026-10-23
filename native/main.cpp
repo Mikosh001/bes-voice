@@ -10,6 +10,7 @@
 #include <tuple>
 #include "ui.hpp"
 #include "audio-test.hpp"
+#include "timing-test.hpp"
 
 uint64_t filetimeValue(FILETIME f){return (uint64_t)f.dwLowDateTime|((uint64_t)f.dwHighDateTime<<32);}
 int bot(const std::wstring& url,const std::wstring& code,const std::wstring& name,int seconds,const std::wstring& path,bool hardware=false){
@@ -40,7 +41,7 @@ int embeddedCheck(const std::wstring& path){
 }
 int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int){
  int argc=0;auto argv=CommandLineToArgvW(GetCommandLineW(),&argc);int result=0;
- try{if(argc>=3&&std::wstring(argv[1])==L"--audio-test")result=audioTest(argv[2]);else if(argc>=5&&std::wstring(argv[1])==L"--process-audio")result=processAudio(argv[2],argv[3],_wtoi(argv[4]));else if(argc>=3&&std::wstring(argv[1])==L"--relay")result=relay::run(_wtoi(argv[2]));else if(argc>=7&&std::wstring(argv[1])==L"--auto-bot")result=autoBot(argv[2],argv[3],argv[4],std::clamp(_wtoi(argv[5]),1,300),argv[6]);else if(argc>=3&&std::wstring(argv[1])==L"--embedded-check")result=embeddedCheck(argv[2]);else if(argc>=3&&std::wstring(argv[1])==L"--profile-test")result=profileTest(argv[2]);else if(argc>=7&&(std::wstring(argv[1])==L"--bot"||std::wstring(argv[1])==L"--hardware-bot"))result=bot(argv[2],argv[3],argv[4],std::clamp(_wtoi(argv[5]),1,300),argv[6],std::wstring(argv[1])==L"--hardware-bot");else if(argc>=3&&std::wstring(argv[1])==L"--self-test")result=selftest(argv[2]);else result=ui::run(instance,
+ try{if(argc>=3&&std::wstring(argv[1])==L"--timing-test")result=timingTest(argv[2]);else if(argc>=3&&std::wstring(argv[1])==L"--audio-test")result=audioTest(argv[2]);else if(argc>=5&&std::wstring(argv[1])==L"--roundtrip-audio")result=roundTripAudio(argv[2],argv[3],_wtoi(argv[4]));else if(argc>=5&&std::wstring(argv[1])==L"--process-audio")result=processAudio(argv[2],argv[3],_wtoi(argv[4]));else if(argc>=3&&std::wstring(argv[1])==L"--relay")result=relay::run(_wtoi(argv[2]));else if(argc>=7&&std::wstring(argv[1])==L"--auto-bot")result=autoBot(argv[2],argv[3],argv[4],std::clamp(_wtoi(argv[5]),1,300),argv[6]);else if(argc>=3&&std::wstring(argv[1])==L"--embedded-check")result=embeddedCheck(argv[2]);else if(argc>=3&&std::wstring(argv[1])==L"--profile-test")result=profileTest(argv[2]);else if(argc>=7&&(std::wstring(argv[1])==L"--bot"||std::wstring(argv[1])==L"--hardware-bot"))result=bot(argv[2],argv[3],argv[4],std::clamp(_wtoi(argv[5]),1,300),argv[6],std::wstring(argv[1])==L"--hardware-bot");else if(argc>=3&&std::wstring(argv[1])==L"--self-test")result=selftest(argv[2]);else result=ui::run(instance,
 #ifdef BES_UI_DEMO
 true
 #else

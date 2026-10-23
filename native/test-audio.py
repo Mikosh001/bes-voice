@@ -1,51 +1,48 @@
 from pathlib import Path
-import array, math, random, json, wave, subprocess
+import array,math,random,json,wave,subprocess
 
 root=Path(__file__).resolve().parent
-flags=0x08000000
 exe=root/'BES.exe' if (root/'BES.exe').exists() else root/'build/BES.exe'
-test=subprocess.run([str(exe),'--audio-test',str(root/'audio-results.json')],creationflags=flags,timeout=15)
-if test.returncode:
-    print((root/'audio-results.json').read_text())
-    raise SystemExit(test.returncode)
+flags=0x08000000
+def run(option,*args):
+    p=subprocess.run([str(exe),option,*map(str,args)],creationflags=flags,timeout=40)
+    if p.returncode:raise RuntimeError(f'{option} failed: {p.returncode}')
+run('--audio-test',root/'audio-results.json')
 with wave.open(str(root/'.deps/speech_orig.wav'),'rb') as source:
     assert source.getnchannels()==1 and source.getsampwidth()==2 and source.getframerate()==48000
-    original=array.array('h',source.readframes(source.getnframes()))
-# Low-pass FIR before integer 48k -> 16k decimation, independent of app DSP.
-kernel=[]
-for i in range(63):
-    x=i-31
-    sinc=2*.145 if x==0 else math.sin(2*math.pi*.145*x)/(math.pi*x)
-    kernel.append(sinc*(.54-.46*math.cos(2*math.pi*i/62)))
-norm=sum(kernel);kernel=[v/norm for v in kernel]
-speech=[sum(original[max(0,min(len(original)-1,i+j-31))]*kernel[j] for j in range(63)) for i in range(0,len(original),3)]
-speech=[v*.65 for v in speech]
-padding=16000*3
-reference=[0.]*padding+speech+[0.]*padding
-reference=reference[:len(reference)//320*320]
+    speech=array.array('h');speech.frombytes(source.readframes(source.getnframes()))
+rate=48000;frame=960
+reference=[0.]* (rate*3)+[s*.65 for s in speech]+[0.]*(rate*3)
+reference=reference[:len(reference)//frame*frame]
 rng=random.Random(835)
-noise=[rng.gauss(0,530)+210*math.sin(2*math.pi*100*i/16000) for i in range(len(reference))]
-noisy=array.array('h',(int(max(-32768,min(32767,s+n))) for s,n in zip(reference,noise)))
-(root/'noise-input.pcm').write_bytes(noisy.tobytes())
-metrics={}
+noisy=array.array('h',(int(max(-32768,min(32767,s+rng.gauss(0,530)+210*math.sin(2*math.pi*100*i/rate)))) for i,s in enumerate(reference)))
+clean=array.array('h',map(int,reference))
+(root/'natural-reference.pcm').write_bytes(clean.tobytes());(root/'noise-input-48.pcm').write_bytes(noisy.tobytes())
+
+def compare(original,processed,start,end,maxdelay):
+    delay=max(range(0,maxdelay+1,24),key=lambda d:sum(original[i]*processed[i+d] for i in range(start,end,48)))
+    dot=sum(original[i]*processed[i+delay] for i in range(start,end));power=sum(original[i]**2 for i in range(start,end));out=sum(processed[i+delay]**2 for i in range(start,end))
+    return {'delayMs':round(delay/48,2),'correlation':round(dot/math.sqrt(max(1,power*out)),5),'gainDb':round(20*math.log10(max(1e-9,abs(dot/max(1,power)))),2)}
+start=rate*4;end=len(reference)-rate*3-2400
+results={}
 for mode in [0,1,2]:
-    destination=root/f'noise-mode-{mode}.pcm'
-    result=subprocess.run([str(exe),'--process-audio',str(root/'noise-input.pcm'),str(destination),str(mode)],creationflags=flags,timeout=20)
-    assert result.returncode==0
-    processed=array.array('h');processed.frombytes(destination.read_bytes());assert len(processed)==len(noisy)
-    # Filter has overlap-add delay. Estimate it using real, nonstationary speech.
-    a=padding+16000;b=min(len(reference)-padding-640,padding+len(speech)-640)
-    best=max(range(0,641,16),key=lambda delay:sum(reference[i]*processed[i+delay] for i in range(a,b,8)))
-    dot=sum(reference[i]*processed[i+best] for i in range(a,b))
-    energy=sum(reference[i]**2 for i in range(a,b));out_energy=sum(processed[i+best]**2 for i in range(a,b))
-    correlation=dot/math.sqrt(max(1,energy*out_energy))
-    gain=dot/max(1,energy)
-    start=16000*2;stop=padding-640
-    noise_in=sum(noisy[i]**2 for i in range(start,stop));noise_out=sum(processed[i]**2 for i in range(start,stop))
-    attenuation=10*math.log10((noise_in+1)/(noise_out+1))
-    metrics[str(mode)]={'stationaryNoiseReductionDb':round(attenuation,2),'speechCorrelation':round(correlation,4),'speechGainDb':round(20*math.log10(max(abs(gain),1e-8)),2),'estimatedFilterDelayMs':best/16}
-passed=metrics['1']['stationaryNoiseReductionDb']>8 and metrics['1']['speechCorrelation']>.65 and metrics['1']['speechGainDb']>-9 and metrics['2']['stationaryNoiseReductionDb']>=metrics['1']['stationaryNoiseReductionDb'] and (root/'noise-mode-0.pcm').read_bytes()==noisy.tobytes()
-report={'passed':passed,'sampleSource':'https://www.opus-codec.org/examples/ (speech_orig.wav, local evaluation only; not redistributed)','scope':'16 kHz real speech plus deterministic stationary white noise and hum; not a test of all background sounds or actual microphone hardware','modes':metrics,'dspChecks':json.loads((root/'audio-results.json').read_text())}
-(root/'speech-filter-results.json').write_text(json.dumps(report,indent=2))
-print(json.dumps(report,indent=2))
+    dst=root/f'noise04-{mode}.pcm';run('--process-audio',root/'noise-input-48.pcm',dst,mode)
+    data=array.array('h');data.frombytes(dst.read_bytes());assert len(data)==len(noisy)
+    score=compare(reference,data,start,end,1200)
+    noise_start=rate*2;noise_end=rate*3-2400
+    before=sum(noisy[i]**2 for i in range(noise_start,noise_end));after=sum(data[i]**2 for i in range(noise_start,noise_end))
+    score['stationaryNoiseReductionDb']=round(10*math.log10((before+1)/(after+1)),2);results[str(mode)]=score
+    if mode==0:assert data==noisy
+
+run('--roundtrip-audio',root/'natural-reference.pcm',root/'codec-roundtrip-48.pcm',0)
+decoded=array.array('h');decoded.frombytes((root/'codec-roundtrip-48.pcm').read_bytes())
+codec=compare(reference,decoded,start,end,1200)
+tone=array.array('h',(int(4000*math.sin(2*math.pi*1000*i/rate)+4000*math.sin(2*math.pi*12000*i/rate)) for i in range(rate*2)))
+(root/'fullband-probe.pcm').write_bytes(tone.tobytes());run('--roundtrip-audio',root/'fullband-probe.pcm',root/'fullband-probe-decoded.pcm',0)
+probe=array.array('h');probe.frombytes((root/'fullband-probe-decoded.pcm').read_bytes())
+n=rate
+amplitude12=2*math.hypot(sum(probe[i]*math.sin(2*math.pi*12000*i/rate) for i in range(n,2*n)),sum(probe[i]*math.cos(2*math.pi*12000*i/rate) for i in range(n,2*n)))/n
+passed=(codec['correlation']>.96 and codec['gainDb']>-1.5 and amplitude12>2000 and results['1']['stationaryNoiseReductionDb']>3 and results['1']['correlation']>.65 and results['2']['stationaryNoiseReductionDb']>results['1']['stationaryNoiseReductionDb'])
+result={'passed':passed,'sampleRate':rate,'frameSamples':frame,'targetBitrate':64000,'defaultProfile':'Natural: filter and gate bypass; Opus AUDIO fullband; continuous 20ms packets including silence', 'cleanSpeechCodecRoundtrip':codec,'twelveKHzProbeAmplitude':round(amplitude12,2),'noiseModes':results,'dsp':json.loads((root/'audio-results.json').read_text()),'scope':'Offline public speech sample and generated probes, not a hardware microphone or perceptual listening test','sampleSource':'https://www.opus-codec.org/examples/; original audio not redistributed'}
+(root/'voice-quality-results.json').write_text(json.dumps(result,indent=2));print(json.dumps(result,indent=2),flush=True)
 if not passed:raise SystemExit(2)

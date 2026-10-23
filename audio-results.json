@@ -1,1 +1,1 @@
-{"passed":true,"stationaryNoiseReductionDb":20.0314,"noiseBypassExact":true,"speechGateHoldAndMutePassed":true,"fourSpeakerMixPeak":27000,"jitterGapConcealed":true,"jitterQueueBounded":true,"replayRejected":true}
+{"passed":true,"stationaryNoiseReductionDb":6.42116,"noiseBypassExact":true,"speechGateHoldAndMutePassed":true,"fourSpeakerMixPeak":27000,"jitterGapConcealed":true,"jitterQueueBounded":true,"replayRejected":true}
